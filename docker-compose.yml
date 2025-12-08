@@ -1,6 +1,6 @@
 services:
   dtrack-docker-scanner:
-    image: ${IMAGE_NAME:-dtrack-docker-scanner}:${IMAGE_TAG:-latest}
+    image: ${SCANNER_IMAGE:-ghcr.io/janhouse/dtrack-docker-scanner:latest}
     build: .
     container_name: dtrack-docker-scanner
     restart: unless-stopped

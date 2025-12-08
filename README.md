@@ -35,6 +35,11 @@ A Docker container scanner that automatically generates Software Bill of Materia
    docker compose up -d
    ```
 
+   To use a custom image, set `SCANNER_IMAGE`:
+   ```bash
+   SCANNER_IMAGE=my-registry/dtrack-docker-scanner:v1.0.0 docker compose up -d
+   ```
+
 ### Using Docker Run
 
 ```bash
