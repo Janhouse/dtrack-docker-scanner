@@ -1,0 +1,24 @@
+services:
+  sbom-scanner:
+    image: ${IMAGE_NAME:-sbom-scanner}:latest
+    build: .
+    container_name: sbom-scanner
+    restart: unless-stopped
+    environment:
+      - DTRACK_URL=${DTRACK_URL}
+      - DTRACK_API_KEY=${DTRACK_API_KEY}
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-0 */6 * * *}
+      - SCAN_ON_START=${SCAN_ON_START:-true}
+      - EXCLUDE_IMAGES=${EXCLUDE_IMAGES:-}
+      - DTRACK_PARENT_PROJECT=${DTRACK_PARENT_PROJECT:-}
+      - SCANNER_HOSTNAME=${SCANNER_HOSTNAME:-}
+      - CLEANUP_STALE=${CLEANUP_STALE:-true}
+      - PROJECT_PREFIX=${PROJECT_PREFIX:-zzz-docker/}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "/app/scripts/healthcheck.sh"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
