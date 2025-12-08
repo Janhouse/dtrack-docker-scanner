@@ -10,7 +10,6 @@ PARENT_PROJECT="${PARENT_PROJECT%"${PARENT_PROJECT##*[![:space:]]}"}"
 EXCLUDE_IMAGES="${EXCLUDE_IMAGES:-}"
 SCANNER_HOSTNAME="${SCANNER_HOSTNAME:-$(hostname)}"
 CLEANUP_STALE="${CLEANUP_STALE:-true}"
-PROJECT_PREFIX="${PROJECT_PREFIX:-zzz-docker/}"
 
 # Track uploaded versions for cleanup
 declare -A UPLOADED_VERSIONS
@@ -120,6 +119,81 @@ get_all_projects() {
     echo "$all_projects"
 }
 
+# Find projects by name (returns all versions of a project)
+find_projects_by_name() {
+    local project_name="$1"
+    local encoded_name=$(printf '%s' "$project_name" | jq -sRr @uri)
+
+    curl -s \
+        "${DTRACK_URL}/api/v1/project?name=${encoded_name}" \
+        -H "X-Api-Key: ${DTRACK_API_KEY}" \
+        -H "Accept: application/json"
+}
+
+# Get project UUID by name and version
+get_project_uuid() {
+    local project_name="$1"
+    local project_version="$2"
+    local encoded_name=$(printf '%s' "$project_name" | jq -sRr @uri)
+    local encoded_version=$(printf '%s' "$project_version" | jq -sRr @uri)
+
+    local response=$(curl -s -w "\n%{http_code}" \
+        "${DTRACK_URL}/api/v1/project/lookup?name=${encoded_name}&version=${encoded_version}" \
+        -H "X-Api-Key: ${DTRACK_API_KEY}" \
+        -H "Accept: application/json")
+
+    local http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | sed '$d')
+
+    if [[ "$http_code" == "200" ]]; then
+        echo "$body" | jq -r '.uuid'
+    else
+        echo ""
+    fi
+}
+
+# Wait for BOM processing to complete
+wait_for_bom_processing() {
+    local token="$1"
+    local max_wait=120  # Maximum wait time in seconds
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        local response=$(curl -s \
+            "${DTRACK_URL}/api/v1/bom/token/${token}" \
+            -H "X-Api-Key: ${DTRACK_API_KEY}" \
+            -H "Accept: application/json")
+
+        local processing=$(echo "$response" | jq -r '.processing // false')
+
+        if [[ "$processing" == "false" ]]; then
+            return 0
+        fi
+
+        sleep 2
+        ((waited+=2)) || true
+    done
+
+    log "⚠ BOM processing timeout after ${max_wait}s"
+    return 1
+}
+
+# Clone analysis decisions from source project to target project
+clone_analysis_decisions() {
+    local source_uuid="$1"
+    local target_uuid="$2"
+
+    local http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "${DTRACK_URL}/api/v1/finding/project/${target_uuid}/clone?sourceProjectUuid=${source_uuid}" \
+        -H "X-Api-Key: ${DTRACK_API_KEY}")
+
+    if [[ "$http_code" == "200" || "$http_code" == "204" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Delete a project version from Dependency-Track
 delete_project() {
     local uuid="$1"
@@ -154,23 +228,27 @@ cleanup_stale_projects() {
     local deleted=0
     local kept=0
 
-    # Filter projects matching our prefix and exact version pattern (latest@hostname)
-    local our_version="latest@${SCANNER_HOSTNAME}"
+    # Filter ALL projects created by this scanner on this host (any version)
+    # Identified by tags "docker-scanner" and "host:$hostname"
+    # This cleans up old versions (like "latest@hostname") and removed containers
+    local host_tag="host:${SCANNER_HOSTNAME}"
     local our_projects=$(echo "$projects" | jq -r \
-        --arg prefix "$PROJECT_PREFIX" \
-        --arg version "$our_version" \
+        --arg host_tag "$host_tag" \
         '.[] | select(
-            .name != null and
-            .version != null and
-            (.name | startswith($prefix)) and
-            (.version == $version)
+            (.tags // []) | map(.name) | (contains(["docker-scanner"]) and contains([$host_tag]))
         ) | @base64')
 
     for project_b64 in $our_projects; do
         local project=$(echo "$project_b64" | base64 -d)
         local uuid=$(echo "$project" | jq -r '.uuid')
         local name=$(echo "$project" | jq -r '.name')
-        local version=$(echo "$project" | jq -r '.version')
+        local version=$(echo "$project" | jq -r '.version // empty')
+
+        # Skip the parent project itself
+        if [[ -n "$PARENT_PROJECT" && "$name" == "$PARENT_PROJECT" && -z "$version" ]]; then
+            log "Skipping parent project: $name"
+            continue
+        fi
 
         # Build lookup key (same as what we track during upload)
         local lookup_key="${name}:${version}"
@@ -193,7 +271,7 @@ upload_sbom() {
     local sbom_file="$2"
     local compose_projects="$3"  # Comma-separated list of compose projects
 
-    # Parse image name (ignore tag - we use fixed version per host)
+    # Parse image name and tag
     local image_name="${image%%:*}"
     local image_tag="${image##*:}"
     if [[ "$image_name" == "$image_tag" ]]; then
@@ -203,14 +281,27 @@ upload_sbom() {
     # Extract base name without registry for tagging (e.g., nginx from registry.example.com/nginx)
     local base_name="${image_name##*/}"
 
-    # Add prefix to project name for sorting
-    local project_name="${PROJECT_PREFIX}${image_name}"
+    # Build project name: compose-project/image or just image for standalone
+    local project_name
+    if [[ -n "$compose_projects" ]]; then
+        # Use first compose project as prefix (most containers belong to one stack)
+        local primary_compose="${compose_projects%%,*}"
+        project_name="${primary_compose}/${image_name}"
+    else
+        # Standalone container - just use image name
+        project_name="${image_name}"
+    fi
 
-    # Use fixed version per host - this ensures we update the same project
-    # entry when the container image changes, rather than creating new versions
-    local project_version="latest@${SCANNER_HOSTNAME}"
+    # Use actual image tag as version
+    local project_version="${image_tag}"
 
-    log "Uploading SBOM for ${project_name}:${project_version} (image tag: ${image_tag}, compose: ${compose_projects:-none})"
+    log "Uploading SBOM for ${project_name}:${project_version} (compose: ${compose_projects:-none})"
+
+    # Find existing versions of this project BEFORE uploading
+    local existing_projects=$(find_projects_by_name "$project_name")
+    local old_versions=$(echo "$existing_projects" | jq -r \
+        --arg version "$project_version" \
+        '.[] | select(.version != $version) | @base64' 2>/dev/null || echo "")
 
     # Create temp files (BusyBox-compatible mktemp)
     local payload_file=$(mktemp -p /tmp payload-XXXXXX)
@@ -229,7 +320,6 @@ upload_sbom() {
         --arg parent "$PARENT_PROJECT" \
         --arg base_name "$base_name" \
         --arg hostname "$SCANNER_HOSTNAME" \
-        --arg image_tag "$image_tag" \
         --arg compose "$compose_projects" \
         '{
             projectName: $name,
@@ -240,7 +330,6 @@ upload_sbom() {
                 [
                     $base_name,
                     ("host:" + $hostname),
-                    ("tag:" + $image_tag),
                     "docker-scanner"
                 ] + (
                     if $compose != "" then
@@ -262,18 +351,48 @@ upload_sbom() {
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
 
-    if [[ "$http_code" == "200" ]]; then
-        local token=$(echo "$body" | jq -r '.token // empty')
-        log "✓ Uploaded successfully (token: ${token:-n/a})"
-
-        # Track this upload for cleanup phase
-        UPLOADED_VERSIONS["${project_name}:${project_version}"]=1
-
-        return 0
-    else
+    if [[ "$http_code" != "200" ]]; then
         log "✗ Upload failed (HTTP $http_code): $body"
         return 1
     fi
+
+    local token=$(echo "$body" | jq -r '.token // empty')
+    log "✓ Uploaded successfully (token: ${token:-n/a})"
+
+    # Track this upload for cleanup phase
+    UPLOADED_VERSIONS["${project_name}:${project_version}"]=1
+
+    # Wait for BOM processing to complete before cloning analysis
+    if [[ -n "$token" ]]; then
+        log "  Waiting for BOM processing..."
+        if wait_for_bom_processing "$token"; then
+            # Get the new project UUID
+            local new_uuid=$(get_project_uuid "$project_name" "$project_version")
+
+            if [[ -n "$new_uuid" && -n "$old_versions" ]]; then
+                # Clone analysis decisions from previous version(s)
+                for old_b64 in $old_versions; do
+                    local old_project=$(echo "$old_b64" | base64 -d)
+                    local old_uuid=$(echo "$old_project" | jq -r '.uuid')
+                    local old_version=$(echo "$old_project" | jq -r '.version')
+
+                    log "  Cloning analysis from ${old_version}..."
+                    if clone_analysis_decisions "$old_uuid" "$new_uuid"; then
+                        log "  ✓ Cloned successfully"
+                        # Delete old version after successful clone
+                        log "  Deleting old version ${old_version}..."
+                        if delete_project "$old_uuid" "$project_name" "$old_version"; then
+                            log "  ✓ Old version deleted"
+                        fi
+                    else
+                        log "  ⚠ Clone failed, keeping old version"
+                    fi
+                done
+            fi
+        fi
+    fi
+
+    return 0
 }
 
 is_excluded() {
@@ -295,7 +414,6 @@ is_excluded() {
 main() {
     log "=== Starting SBOM scan ==="
     log "Host: ${SCANNER_HOSTNAME}"
-    log "Project prefix: ${PROJECT_PREFIX}"
     log "Parent project: ${PARENT_PROJECT:-<none>}"
     log "Cleanup stale: ${CLEANUP_STALE}"
 
