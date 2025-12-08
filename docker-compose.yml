@@ -1,8 +1,8 @@
 services:
-  sbom-scanner:
-    image: ${IMAGE_NAME:-sbom-scanner}:latest
+  dtrack-docker-scanner:
+    image: ${IMAGE_NAME:-dtrack-docker-scanner}:${IMAGE_TAG:-latest}
     build: .
-    container_name: sbom-scanner
+    container_name: dtrack-docker-scanner
     restart: unless-stopped
     environment:
       - DTRACK_URL=${DTRACK_URL}
@@ -13,12 +13,11 @@ services:
       - DTRACK_PARENT_PROJECT=${DTRACK_PARENT_PROJECT:-}
       - SCANNER_HOSTNAME=${SCANNER_HOSTNAME:-}
       - CLEANUP_STALE=${CLEANUP_STALE:-true}
-      - PROJECT_PREFIX=${PROJECT_PREFIX:-zzz-docker/}
       - TZ=${TZ:-UTC}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
-      test: ["CMD", "/app/scripts/healthcheck.sh"]
+      test: ["CMD", "bun", "--bun", "run", "/app/src/healthcheck.ts"]
       interval: 60s
       timeout: 10s
       retries: 3

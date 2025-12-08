@@ -1,13 +1,11 @@
-FROM alpine:3.20
+FROM oven/bun:1-alpine AS base
 
-# Install dependencies
+# Install system dependencies
 RUN apk add --no-cache \
-    bash \
-    curl \
-    jq \
     docker-cli \
     ca-certificates \
-    tzdata
+    tzdata \
+    curl
 
 # Install Trivy
 RUN curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
@@ -15,15 +13,19 @@ RUN curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib
 # Create app directory
 WORKDIR /app
 
-# Copy scripts
-COPY scripts/ /app/scripts/
-RUN chmod +x /app/scripts/*.sh
+# Copy package files
+COPY package.json bun.lockb* ./
 
-# Copy crontab
-COPY config/crontab /etc/crontabs/root
+# Install dependencies
+RUN bun install --frozen-lockfile || bun install
+
+# Copy source code
+COPY tsconfig.json ./
+COPY src/ ./src/
 
 # Health check
-HEALTHCHECK --interval=60s --timeout=10s --start-period=5s --retries=3 \
-    CMD /app/scripts/healthcheck.sh
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
+    CMD bun --bun run /app/src/healthcheck.ts
 
-ENTRYPOINT ["/app/scripts/entrypoint.sh"]
+# Run the application
+CMD ["bun", "run", "src/index.ts"]

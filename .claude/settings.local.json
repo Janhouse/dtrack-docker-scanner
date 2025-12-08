@@ -3,7 +3,14 @@
     "allow": [
       "WebSearch",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:docs.dependencytrack.org)"
+      "WebFetch(domain:docs.dependencytrack.org)",
+      "Bash(bun install:*)",
+      "Bash(bun run typecheck:*)",
+      "Bash(bun add:*)",
+      "Bash(bun run lint)",
+      "Bash(bunx biome:*)",
+      "Bash(bun run lint:fix:*)",
+      "Bash(bun run format:*)"
     ],
     "deny": [],
     "ask": []

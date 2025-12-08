@@ -1,0 +1,107 @@
+name: Builder
+run-name: ${{ gitea.actor }} is building project 🚀
+on:
+  workflow_dispatch:
+    inputs:
+      custom_tags:
+        description: 'Custom version tags (comma-separated, e.g., v1.2,v1.2.1)'
+        required: false
+        type: string
+      push_to_github:
+        description: 'Also push to GitHub Container Registry'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        env:
+          REPOSITORY_IMAGE: ${{ vars.REPOSITORY_IMAGE }}
+        run: docker build -t ${REPOSITORY_IMAGE} .
+
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+
+      - name: Push image
+        env:
+          REPOSITORY_IMAGE: ${{ vars.REPOSITORY_IMAGE }}
+        run: docker push ${REPOSITORY_IMAGE}
+
+      - name: Tag and push custom tags
+        if: ${{ github.event.inputs.custom_tags != '' }}
+        env:
+          REPOSITORY_IMAGE: ${{ vars.REPOSITORY_IMAGE }}
+          CUSTOM_TAGS: ${{ github.event.inputs.custom_tags }}
+        run: |
+          # Get the base image name (remove any existing tag)
+          BASE_IMAGE=$(echo "${REPOSITORY_IMAGE}" | cut -d':' -f1)
+
+          # Split comma-separated tags and push each
+          IFS=',' read -ra TAGS <<< "${CUSTOM_TAGS}"
+          for TAG in "${TAGS[@]}"; do
+            TAG=$(echo "$TAG" | xargs)  # Trim whitespace
+            if [ -n "$TAG" ]; then
+              echo "Tagging and pushing: ${BASE_IMAGE}:${TAG}"
+              docker tag "${REPOSITORY_IMAGE}" "${BASE_IMAGE}:${TAG}"
+              docker push "${BASE_IMAGE}:${TAG}"
+            fi
+          done
+
+      - name: Login to GitHub Container Registry
+        if: ${{ github.event.inputs.push_to_github == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Push to GitHub Container Registry
+        if: ${{ github.event.inputs.push_to_github == 'true' }}
+        env:
+          REPOSITORY_IMAGE: ${{ vars.REPOSITORY_IMAGE }}
+          GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
+          CUSTOM_TAGS: ${{ github.event.inputs.custom_tags }}
+        run: |
+          # Tag and push latest
+          docker tag "${REPOSITORY_IMAGE}" "${GHCR_IMAGE}"
+          docker push "${GHCR_IMAGE}"
+
+          # Push custom tags to GitHub as well
+          if [ -n "${CUSTOM_TAGS}" ]; then
+            BASE_IMAGE=$(echo "${GHCR_IMAGE}" | cut -d':' -f1)
+            IFS=',' read -ra TAGS <<< "${CUSTOM_TAGS}"
+            for TAG in "${TAGS[@]}"; do
+              TAG=$(echo "$TAG" | xargs)
+              if [ -n "$TAG" ]; then
+                echo "Pushing to GitHub: ${BASE_IMAGE}:${TAG}"
+                docker tag "${REPOSITORY_IMAGE}" "${BASE_IMAGE}:${TAG}"
+                docker push "${BASE_IMAGE}:${TAG}"
+              fi
+            done
+          fi
+
+      - name: Create build metadata
+        run: |
+          cat > build-metadata.json << EOF
+          {
+            "custom_tags": "${{ github.event.inputs.custom_tags || '' }}",
+            "pushed_to_github": "${{ github.event.inputs.push_to_github || 'false' }}"
+          }
+          EOF
+
+      - name: Upload build metadata
+        uses: https://github.com/Janhouse/gitea-upload-artifact@v4
+        with:
+          name: build-metadata
+          path: build-metadata.json
+          retention-days: 1

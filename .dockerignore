@@ -1,0 +1,6 @@
+/.gitea
+/.claude
+/.git
+**/node_modules
+.env
+.env.local

@@ -1,2 +1,0 @@
-# Default: scan every 6 hours
-0 */6 * * * /app/scripts/scan.sh >> /var/log/scanner.log 2>&1
