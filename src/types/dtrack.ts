@@ -19,13 +19,6 @@ export interface DTrackProject {
   };
 }
 
-export interface DTrackProjectCreate {
-  name: string;
-  version: string;
-  description?: string;
-  tags?: DTrackTag[];
-}
-
 export interface DTrackBomUploadRequest {
   projectName: string;
   projectVersion: string;
@@ -41,11 +34,4 @@ export interface DTrackBomUploadResponse {
 
 export interface DTrackBomProcessingStatus {
   processing: boolean;
-}
-
-export interface DTrackApiResponse<T> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  httpCode: number;
 }

@@ -46,26 +46,6 @@ export class ImageCache {
   }
 
   /**
-   * Get cached entry for an image
-   */
-  get(imageId: string): CacheEntry | undefined {
-    const key = this.makeKey(imageId);
-    const entry = this.cache.get(key);
-
-    if (!entry) {
-      return undefined;
-    }
-
-    // Check if entry has expired
-    if (Date.now() - entry.scannedAt > this.ttlMs) {
-      this.cache.delete(key);
-      return undefined;
-    }
-
-    return entry;
-  }
-
-  /**
    * Mark an image as scanned
    */
   set(imageId: string, projectName: string, projectVersion: string): void {
@@ -103,12 +83,5 @@ export class ImageCache {
    */
   get size(): number {
     return this.cache.size;
-  }
-
-  /**
-   * Clear the entire cache
-   */
-  clear(): void {
-    this.cache.clear();
   }
 }
