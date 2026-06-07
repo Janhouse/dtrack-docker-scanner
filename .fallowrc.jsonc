@@ -6,6 +6,11 @@
     // Hide pair-only clones; focus on widespread copy-paste.
     "minOccurrences": 3
   },
+  // DockerClient event-listener methods are invoked from src/index.ts via a
+  // chained getter call (`scanner.getDockerClient().startEventListener(...)`),
+  // which the static class-member analysis cannot resolve. They are real,
+  // used API, so suppress the false-positive unused-class-member findings.
+  "usedClassMembers": ["startEventListener", "stopEventListener"],
   "rules": {
     "unused-dependencies": "warn"
   }
