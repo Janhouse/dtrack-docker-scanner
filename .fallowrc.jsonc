@@ -13,5 +13,22 @@
   "usedClassMembers": ["startEventListener", "stopEventListener"],
   "rules": {
     "unused-dependencies": "warn"
-  }
+  },
+  // DockerEventCallback is re-exported from the clients barrel as part of the
+  // public API and is consumed internally by docker.ts; keep the barrel export.
+  "ignoreExports": [
+    {
+      "file": "src/clients/index.ts",
+      "exports": ["DockerEventCallback"]
+    }
+  ],
+  // Class members the static tracer cannot follow through accessor call-chains
+  // (scanner.getDockerClient().startEventListener()/.stopEventListener()), plus
+  // the ImageCache public get/clear API.
+  "usedClassMembers": [
+    "startEventListener",
+    "stopEventListener",
+    "get",
+    "clear"
+  ]
 }
