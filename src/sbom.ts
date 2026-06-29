@@ -21,62 +21,86 @@ interface CycloneDxComponent {
 }
 
 interface CycloneDxBom {
+  specVersion?: string;
   components?: CycloneDxComponent[];
   [key: string]: unknown;
 }
 
+// DependencyTrack accepts CycloneDX up to this spec version (DT 4.14). Newer Trivy
+// emits 1.7, which DT rejects ("Unrecognized specVersion"); the component data is
+// backward-compatible, so we clamp the declared version down to this.
+const MAX_CYCLONEDX_SPEC = "1.6";
+
+export interface SbomOptions {
+  // Trivy image source: e.g. "docker", "containerd", "remote". Maps to
+  // `trivy image --image-src <src>`. Omit to let Trivy auto-detect (default,
+  // used for the Docker path).
+  imageSrc?: string;
+}
+
 /**
- * Generate SBOM for a Docker image using Trivy
+ * Generate SBOM for a container image using Trivy. With opts.imageSrc the image
+ * is read from that source (e.g. "containerd" for images already on a k8s node).
  */
-export async function generateSbom(image: string): Promise<SbomResult> {
-  const outputPath = join(
-    tmpdir(),
-    `sbom-${Date.now()}-${Math.random().toString(36).substring(2)}.json`,
-  );
+export async function generateSbom(
+  image: string,
+  opts: SbomOptions = {},
+): Promise<SbomResult> {
+  // Try each image source in order (e.g. "containerd,remote"): scan the node's
+  // local store first, then fall back to a registry pull when its layer blobs
+  // were garbage-collected (k3s containerd discards unpacked layers, so Trivy
+  // can hit "content digest ... not found"). Empty => a single auto-detect run.
+  const sources = (opts.imageSrc ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const attempts = sources.length > 0 ? sources : [""];
+  let lastError = "SBOM generation failed";
 
-  try {
-    const proc = Bun.spawn(
-      [
-        "trivy",
-        "image",
-        "--format",
-        "cyclonedx",
-        "--output",
-        outputPath,
-        image,
-      ],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      },
+  for (const src of attempts) {
+    const outputPath = join(
+      tmpdir(),
+      `sbom-${Date.now()}-${Math.random().toString(36).substring(2)}.json`,
     );
+    try {
+      const proc = Bun.spawn(
+        [
+          "trivy",
+          "image",
+          ...(src ? ["--image-src", src] : []),
+          "--format",
+          "cyclonedx",
+          "--output",
+          outputPath,
+          image,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
 
-    const stderr = await new Response(proc.stderr).text();
-    const exitCode = await proc.exited;
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
 
-    if (exitCode !== 0) {
-      return {
-        success: false,
-        error: stderr || `Trivy exited with code ${exitCode}`,
-      };
+      if (exitCode !== 0) {
+        lastError = `${src || "auto"}: ${stderr || `Trivy exited with code ${exitCode}`}`;
+        await cleanupSbomFile(outputPath);
+        continue;
+      }
+
+      const file = Bun.file(outputPath);
+      if (!(await file.exists()) || file.size === 0) {
+        lastError = `${src || "auto"}: Empty SBOM generated`;
+        continue;
+      }
+
+      // Clean up the SBOM to fix license schema + spec-version issues
+      await cleanupSbom(outputPath);
+      return { success: true, filePath: outputPath };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
     }
-
-    // Check if file exists and has content
-    const file = Bun.file(outputPath);
-    if (!(await file.exists()) || file.size === 0) {
-      return { success: false, error: "Empty SBOM generated" };
-    }
-
-    // Clean up the SBOM to fix license schema issues
-    await cleanupSbom(outputPath);
-
-    return { success: true, filePath: outputPath };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
   }
+
+  return { success: false, error: lastError };
 }
 
 /**
@@ -88,12 +112,17 @@ async function cleanupSbom(filePath: string): Promise<void> {
     const file = Bun.file(filePath);
     const content = (await file.json()) as CycloneDxBom;
 
-    if (!content.components) {
-      return;
+    // Clamp the CycloneDX spec version down to what DependencyTrack accepts.
+    if (content.specVersion) {
+      const [maj = 0, min = 0] = content.specVersion.split(".").map(Number);
+      const [mMaj, mMin] = MAX_CYCLONEDX_SPEC.split(".").map(Number);
+      if (maj > (mMaj ?? 0) || (maj === mMaj && min > (mMin ?? 0))) {
+        content.specVersion = MAX_CYCLONEDX_SPEC;
+      }
     }
 
     // Fix license entries
-    content.components = content.components.map((component) => {
+    content.components = (content.components ?? []).map((component) => {
       if (!component.licenses || component.licenses.length === 0) {
         return component;
       }

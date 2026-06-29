@@ -4,12 +4,19 @@ import {
   DockerClient,
   type DockerEvent,
   getBaseName,
+  KubernetesClient,
   parseImage,
 } from "./clients";
 import type { Config } from "./config";
 import { logger } from "./logger";
 import { cleanupSbomFile, generateSbom, readSbomAsBase64 } from "./sbom";
 import type { DTrackProject, ImageScanResult } from "./types";
+
+// DependencyTrack tags identifying which scanner manages a project. Cleanup is
+// scoped per-source so the Docker and Kubernetes passes never delete each other's
+// projects.
+const DOCKER_MARKER = "docker-scanner";
+const K8S_MARKER = "k8s-scanner";
 
 interface ScanStats {
   total: number;
@@ -29,6 +36,7 @@ export class Scanner {
   private readonly config: Config;
   private readonly dtrack: DependencyTrackClient;
   private readonly docker: DockerClient;
+  private readonly kubernetes: KubernetesClient | null;
   private readonly cache: ImageCache;
   private readonly uploadedVersions: Set<string> = new Set();
   private readonly stoppedContainers: Map<string, StoppedContainer> = new Map();
@@ -43,7 +51,45 @@ export class Scanner {
       config.dtrack.apiKey,
     );
     this.docker = new DockerClient();
+    this.kubernetes = config.scanner.scanKubernetes
+      ? new KubernetesClient({
+          nodeName: config.kubernetes.nodeName,
+          namespaces: config.kubernetes.namespaces,
+        })
+      : null;
     this.cache = new ImageCache(config.scanner.cacheTtlMinutes);
+  }
+
+  /**
+   * Trivy options for an image, based on which source it came from. Kubernetes
+   * images are read from the node's image store (default: containerd).
+   */
+  private sbomOptsFor(container: ImageScanResult): { imageSrc?: string } {
+    if (
+      container.source === "kubernetes" &&
+      this.config.kubernetes.trivyImageSrc
+    ) {
+      return { imageSrc: this.config.kubernetes.trivyImageSrc };
+    }
+    return {};
+  }
+
+  /**
+   * Collect images to scan from every enabled source (docker + kubernetes).
+   */
+  private async collectImages(): Promise<ImageScanResult[]> {
+    const images: ImageScanResult[] = [];
+    if (this.config.scanner.scanDocker) {
+      const docker = await this.docker.getRunningContainers();
+      logger.info(`Docker: ${docker.length} running image(s)`);
+      images.push(...docker);
+    }
+    if (this.kubernetes) {
+      const k8s = await this.kubernetes.getRunningImages();
+      logger.info(`Kubernetes: ${k8s.length} pod image(s)`);
+      images.push(...k8s);
+    }
+    return images;
   }
 
   /**
@@ -234,7 +280,10 @@ export class Scanner {
     logger.info(`Scanning: ${container.image}`);
 
     // Generate SBOM
-    const sbomResult = await generateSbom(container.image);
+    const sbomResult = await generateSbom(
+      container.image,
+      this.sbomOptsFor(container),
+    );
     if (!sbomResult.success || !sbomResult.filePath) {
       logger.error(`Failed to generate SBOM: ${sbomResult.error}`);
       return false;
@@ -289,13 +338,13 @@ export class Scanner {
         logger.success("Parent project ready");
       }
 
-      // Get running containers
-      const containers = await this.docker.getRunningContainers();
+      // Get running images from every enabled source (docker + kubernetes)
+      const containers = await this.collectImages();
 
       if (containers.length === 0) {
-        logger.info("No running containers found");
+        logger.info("No running images found");
         if (this.config.scanner.cleanupStale && !skipCleanup) {
-          await this.cleanupStaleProjects();
+          await this.cleanupAllSources();
         }
         return;
       }
@@ -310,7 +359,7 @@ export class Scanner {
 
       // Cleanup stale projects (sequential) - skip if requested
       if (this.config.scanner.cleanupStale && !skipCleanup) {
-        await this.cleanupStaleProjects();
+        await this.cleanupAllSources();
       }
     } finally {
       this.isScanning = false;
@@ -341,7 +390,7 @@ export class Scanner {
     setTimeout(async () => {
       logger.section("Running delayed cleanup");
       try {
-        await this.cleanupStaleProjects();
+        await this.cleanupAllSources();
         // Clear uploadedVersions after delayed cleanup completes
         this.uploadedVersions.clear();
       } catch (err) {
@@ -496,7 +545,10 @@ export class Scanner {
     for (const container of toScan) {
       logger.info(`Generating SBOM: ${container.image}`);
 
-      const sbomResult = await generateSbom(container.image);
+      const sbomResult = await generateSbom(
+        container.image,
+        this.sbomOptsFor(container),
+      );
       if (!sbomResult.success || !sbomResult.filePath) {
         logger.error(`Failed to generate SBOM: ${sbomResult.error}`);
         stats.failed++;
@@ -550,12 +602,15 @@ export class Scanner {
       (p) => p.version !== projectVersion,
     );
 
-    // Build tags
+    // Build tags (source-specific marker + grouping tag)
+    const isK8s = container.source === "kubernetes";
     const tags = [
       baseName,
       `host:${this.config.scanner.hostname}`,
-      "docker-scanner",
-      ...composeProjects.map((p) => `compose:${p}`),
+      isK8s ? K8S_MARKER : DOCKER_MARKER,
+      ...(isK8s
+        ? (container.namespaces ?? []).map((n) => `namespace:${n}`)
+        : composeProjects.map((p) => `compose:${p}`)),
       ...(imageId ? [`imageid:${imageId}`] : []),
     ];
 
@@ -627,11 +682,26 @@ export class Scanner {
   }
 
   /**
-   * Clean up stale projects for this host
+   * Run stale-project cleanup for each enabled source. Scoped per-source marker so
+   * the Docker and Kubernetes passes never delete each other's projects.
    */
-  private async cleanupStaleProjects(): Promise<void> {
+  private async cleanupAllSources(): Promise<void> {
+    if (this.config.scanner.scanDocker) {
+      await this.cleanupStaleProjects(DOCKER_MARKER);
+    }
+    if (this.config.scanner.scanKubernetes) {
+      await this.cleanupStaleProjects(K8S_MARKER);
+    }
+    // Also cleanup expired cache entries (once per cycle)
+    this.cache.cleanup();
+  }
+
+  /**
+   * Clean up stale projects for this host + source marker
+   */
+  private async cleanupStaleProjects(marker: string): Promise<void> {
     logger.section(
-      `Cleaning up stale projects for host: ${this.config.scanner.hostname}`,
+      `Cleaning up stale ${marker} projects for host: ${this.config.scanner.hostname}`,
     );
 
     const allProjects = await this.dtrack.getAllProjects();
@@ -641,7 +711,7 @@ export class Scanner {
     }
 
     const hostTag = `host:${this.config.scanner.hostname}`;
-    const requiredTags = ["docker-scanner", hostTag];
+    const requiredTags = [marker, hostTag];
 
     let deleted = 0;
     let kept = 0;
@@ -680,9 +750,6 @@ export class Scanner {
     }
 
     logger.info(`Cleanup complete: ${deleted} deleted, ${kept} kept`);
-
-    // Also cleanup expired cache entries
-    this.cache.cleanup();
   }
 
   /**

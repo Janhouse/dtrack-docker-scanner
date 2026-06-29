@@ -1,0 +1,75 @@
+# dtrack-docker-scanner — Kubernetes (DaemonSet) deployment example.
+#
+# Scans the images of pods running on each node and uploads CycloneDX SBOMs to
+# DependencyTrack. Edit the image, DTRACK_URL, the DTRACK_API_KEY secret, and the
+# containerd socket path for your runtime (this example targets k3s).
+#
+#   kubectl create namespace sbom-scanner
+#   kubectl -n sbom-scanner create secret generic dtrack-scanner-creds \
+#     --from-literal=DTRACK_API_KEY=<key>      # BOM_UPLOAD + PROJECT_CREATION_UPLOAD
+#                                              # + VIEW_PORTFOLIO + PORTFOLIO_MANAGEMENT
+#   kubectl apply -f deploy/kubernetes.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: dtrack-scanner, namespace: sbom-scanner}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: dtrack-scanner-pod-reader}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: dtrack-scanner-pod-reader}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dtrack-scanner-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: dtrack-scanner
+    namespace: sbom-scanner
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: dtrack-scanner, namespace: sbom-scanner, labels: {app: dtrack-scanner}}
+spec:
+  selector: {matchLabels: {app: dtrack-scanner}}
+  template:
+    metadata: {labels: {app: dtrack-scanner}}
+    spec:
+      serviceAccountName: dtrack-scanner
+      containers:
+        - name: scanner
+          image: ghcr.io/janhouse/dtrack-docker-scanner:latest
+          env:
+            - {name: SCAN_DOCKER, value: "false"}
+            - {name: SCAN_KUBERNETES, value: "true"}
+            - {name: KUBE_NODE_NAME, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
+            # containerd first (local, no creds); fall back to a registry pull when
+            # k3s has GC'd the local layer blobs (public images only — private needs creds).
+            - {name: TRIVY_K8S_IMAGE_SRC, value: "containerd,remote"}
+            # k3s containerd; for vanilla containerd use /run/containerd/containerd.sock
+            - {name: CONTAINERD_ADDRESS, value: "/run/k3s/containerd/containerd.sock"}
+            - {name: CONTAINERD_NAMESPACE, value: "k8s.io"}
+            - {name: NODE_EXTRA_CA_CERTS, value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"}
+            - {name: DTRACK_URL, value: "https://dtrack.example.com"}
+            - {name: DTRACK_PARENT_PROJECT, value: "kubernetes"}
+            - {name: TRIVY_CACHE_DIR, value: "/tmp/trivy"}
+            - name: DTRACK_API_KEY
+              valueFrom: {secretKeyRef: {name: dtrack-scanner-creds, key: DTRACK_API_KEY}}
+          resources:
+            requests: {memory: 256Mi, cpu: 100m}
+            limits: {memory: 1Gi, cpu: "2"}
+          volumeMounts:
+            - {name: containerd-sock, mountPath: /run/k3s/containerd/containerd.sock, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: containerd-sock
+          hostPath: {path: /run/k3s/containerd/containerd.sock, type: Socket}
+        - name: tmp
+          emptyDir: {}

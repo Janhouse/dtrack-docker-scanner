@@ -5,6 +5,9 @@ A Docker container scanner that automatically generates Software Bill of Materia
 ## Features
 
 - Scans all running Docker containers on startup
+- **Optionally scans Kubernetes pods on a node** (run as a DaemonSet) — enumerates
+  the node's pods via the in-cluster API and scans their images from the local
+  containerd store, no registry credentials needed (see [Kubernetes mode](#kubernetes-mode))
 - Watches Docker events for new containers and scans them automatically
 - Generates CycloneDX SBOMs using [Trivy](https://trivy.dev/)
 - Uploads SBOMs to Dependency-Track with proper tagging
@@ -78,6 +81,35 @@ All configuration is done via environment variables:
 | `INACTIVE_AFTER_MINUTES` | `60` | Mark project inactive after container stopped this long |
 | `INITIAL_CLEANUP_DELAY_MINUTES` | `3` | Delay cleanup after initial scan to allow other containers to start |
 | `TZ` | `UTC` | Timezone for cron schedule |
+| `SCAN_DOCKER` | `true` | Scan running Docker containers via the Docker socket |
+| `SCAN_KUBERNETES` | `false` | Also scan Kubernetes pods on this node via the in-cluster API |
+| `KUBE_NODE_NAME` | `` | Restrict k8s scanning to pods on this node (set from `spec.nodeName`); empty = all visible pods |
+| `KUBE_NAMESPACES` | `` | Comma-separated namespaces to scan (empty = all visible to the token) |
+| `TRIVY_K8S_IMAGE_SRC` | `containerd` | Trivy source for k8s images: `containerd` (local node store) or `remote` (registry pull) |
+
+At least one of `SCAN_DOCKER` / `SCAN_KUBERNETES` must be enabled.
+
+## Kubernetes mode
+
+When `SCAN_KUBERNETES=true` the scanner lists pods via the in-cluster Kubernetes
+API (filtered to `KUBE_NODE_NAME` when set), then generates an SBOM for each unique
+pod image. With `TRIVY_K8S_IMAGE_SRC=containerd` (the default) Trivy reads images
+straight from the node's containerd store — so **private-registry images need no
+credentials** and nothing is re-pulled. Projects are tagged
+`k8s-scanner` / `host:<node>` / `namespace:<ns>` / `imageid:<digest>`, and cleanup is
+scoped per-source so the Docker and Kubernetes passes never delete each other's
+projects.
+
+Run it as a **DaemonSet** (one pod per node). The pod needs:
+
+- a ServiceAccount with cluster-wide `pods` `get`/`list` (it filters to its own node),
+- the node's containerd socket mounted read-only (k3s: `/run/k3s/containerd/containerd.sock`,
+  with `CONTAINERD_ADDRESS` + `CONTAINERD_NAMESPACE=k8s.io`),
+- `KUBE_NODE_NAME` from the downward API (`fieldRef: spec.nodeName`),
+- `SCAN_DOCKER=false` (no Docker socket in-cluster).
+
+A ready-to-apply manifest (ServiceAccount + RBAC + DaemonSet) is in
+[`deploy/kubernetes.yaml`](deploy/kubernetes.yaml).
 
 ## How It Works
 

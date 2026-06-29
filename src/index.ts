@@ -1,19 +1,36 @@
 import { Cron } from "croner";
-import { DependencyTrackClient, DockerClient } from "./clients";
-import { loadConfig, validateConfig } from "./config";
+import {
+  DependencyTrackClient,
+  DockerClient,
+  KubernetesClient,
+} from "./clients";
+import { type Config, loadConfig, validateConfig } from "./config";
 import { logger } from "./logger";
 import { Scanner } from "./scanner";
 
 async function testConnections(
+  config: Config,
   dtrack: DependencyTrackClient,
   docker: DockerClient,
+  kubernetes: KubernetesClient | null,
 ): Promise<boolean> {
-  // Test Docker socket
-  if (!(await docker.testConnection())) {
-    logger.error("Cannot connect to Docker socket");
-    return false;
+  // Test Docker socket (only if docker scanning is enabled)
+  if (config.scanner.scanDocker) {
+    if (!(await docker.testConnection())) {
+      logger.error("Cannot connect to Docker socket");
+      return false;
+    }
+    logger.success("Docker connection OK");
   }
-  logger.success("Docker connection OK");
+
+  // Test Kubernetes API (only if k8s scanning is enabled)
+  if (kubernetes) {
+    if (!(await kubernetes.testConnection())) {
+      logger.error("Cannot connect to Kubernetes API");
+      return false;
+    }
+    logger.success("Kubernetes connection OK");
+  }
 
   // Test Dependency-Track
   if (!(await dtrack.testConnection())) {
@@ -41,6 +58,14 @@ async function main(): Promise<void> {
   logger.info(`Dependency-Track URL: ${config.dtrack.url}`);
   logger.info(`Scan interval: ${config.scanner.cronSchedule}`);
   logger.info(`Concurrency: ${config.scanner.concurrency}`);
+  logger.info(
+    `Sources: docker=${config.scanner.scanDocker} kubernetes=${config.scanner.scanKubernetes}`,
+  );
+  if (config.scanner.scanKubernetes) {
+    logger.info(
+      `Kubernetes node: ${config.kubernetes.nodeName || "<all>"} | image-src: ${config.kubernetes.trivyImageSrc}`,
+    );
+  }
   logger.info(`Watch Docker events: ${config.scanner.watchDocker}`);
   logger.info(`Cache TTL: ${config.scanner.cacheTtlMinutes} minutes`);
   logger.info(`Inactive after: ${config.scanner.inactiveAfterMinutes} minutes`);
@@ -54,8 +79,14 @@ async function main(): Promise<void> {
     config.dtrack.apiKey,
   );
   const docker = new DockerClient();
+  const kubernetes = config.scanner.scanKubernetes
+    ? new KubernetesClient({
+        nodeName: config.kubernetes.nodeName,
+        namespaces: config.kubernetes.namespaces,
+      })
+    : null;
 
-  if (!(await testConnections(dtrack, docker))) {
+  if (!(await testConnections(config, dtrack, docker, kubernetes))) {
     process.exit(1);
   }
 
@@ -64,8 +95,8 @@ async function main(): Promise<void> {
   // Create scanner instance
   const scanner = new Scanner(config);
 
-  // Start Docker event listener if enabled
-  if (config.scanner.watchDocker) {
+  // Start Docker event listener if enabled (docker source only)
+  if (config.scanner.scanDocker && config.scanner.watchDocker) {
     logger.info("Starting Docker event listener...");
     scanner.getDockerClient().startEventListener((event) => {
       if (event.action === "start") {
@@ -127,7 +158,7 @@ async function main(): Promise<void> {
 
   // Start periodic checker for inactive container marking (every 5 minutes)
   let inactiveChecker: ReturnType<typeof setInterval> | null = null;
-  if (config.scanner.watchDocker) {
+  if (config.scanner.scanDocker && config.scanner.watchDocker) {
     inactiveChecker = setInterval(
       async () => {
         try {
@@ -154,7 +185,7 @@ async function main(): Promise<void> {
     if (inactiveChecker) {
       clearInterval(inactiveChecker);
     }
-    if (config.scanner.watchDocker) {
+    if (config.scanner.scanDocker && config.scanner.watchDocker) {
       scanner.getDockerClient().stopEventListener();
     }
     logger.info(`Cache size at shutdown: ${scanner.getCacheSize()} entries`);

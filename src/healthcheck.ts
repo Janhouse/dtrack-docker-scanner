@@ -1,9 +1,13 @@
 /**
- * Health check script for the Docker SBOM Scanner
+ * Health check script for the SBOM Scanner.
  *
- * Checks:
- * 1. Docker socket is accessible
+ * Checks the connectivity required by the *enabled* sources:
+ *   - Docker socket          (when SCAN_DOCKER is on)
+ *   - Kubernetes SA token    (when SCAN_KUBERNETES is on)
  */
+
+import { existsSync } from "node:fs";
+import { loadConfig } from "./config";
 
 async function checkDocker(): Promise<boolean> {
   try {
@@ -18,10 +22,27 @@ async function checkDocker(): Promise<boolean> {
   }
 }
 
+function checkKubernetes(): boolean {
+  // Cheap liveness signal: the in-cluster service-account token is mounted.
+  return existsSync("/var/run/secrets/kubernetes.io/serviceaccount/token");
+}
+
 async function main(): Promise<void> {
-  // Check Docker socket
-  if (!(await checkDocker())) {
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig();
+  } catch {
+    // Config invalid => unhealthy
+    process.exit(1);
+  }
+
+  if (config.scanner.scanDocker && !(await checkDocker())) {
     console.error("Docker socket not accessible");
+    process.exit(1);
+  }
+
+  if (config.scanner.scanKubernetes && !checkKubernetes()) {
+    console.error("Kubernetes service-account token not found");
     process.exit(1);
   }
 
