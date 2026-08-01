@@ -1,0 +1,145 @@
+name: VEX Upload
+run-name: ${{ gitea.actor }} is uploading VEX 🛡️
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_github:
+        description: 'Also upload VEX for github-latest version'
+        required: false
+        default: false
+        type: boolean
+      custom_tags:
+        description: 'Custom version tags to upload VEX for (comma-separated)'
+        required: false
+        type: string
+  workflow_run:
+    workflows: ["SBOM Generation"]
+    types:
+      - completed
+
+jobs:
+  vex:
+    runs-on: ubuntu-latest
+    # Run on manual trigger OR if the SBOM workflow succeeded
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Check if VEX file exists and has content
+        id: vex-check
+        run: |
+          if [ ! -f vex.json ]; then
+            echo "No vex.json found, skipping workflow"
+            echo "has_vex=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          VEX_COUNT=$(jq '.vulnerabilities | length' vex.json)
+          if [ "$VEX_COUNT" -eq 0 ]; then
+            echo "VEX file is empty, skipping workflow"
+            echo "has_vex=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found ${VEX_COUNT} vulnerability entries in vex.json"
+          echo "has_vex=true" >> $GITHUB_OUTPUT
+
+      - name: Download build metadata
+        if: ${{ steps.vex-check.outputs.has_vex == 'true' && github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: build-metadata
+          github-token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+        continue-on-error: true
+
+      - name: Parse build metadata
+        if: ${{ steps.vex-check.outputs.has_vex == 'true' }}
+        id: metadata
+        env:
+          MANUAL_INCLUDE_GITHUB: ${{ github.event.inputs.include_github || '' }}
+          MANUAL_CUSTOM_TAGS: ${{ github.event.inputs.custom_tags || '' }}
+        run: |
+          # Start with manual input values (for workflow_dispatch)
+          PUSHED_TO_GITHUB="${MANUAL_INCLUDE_GITHUB:-false}"
+          CUSTOM_TAGS="${MANUAL_CUSTOM_TAGS}"
+
+          # Override with artifact values if present (for workflow_run)
+          if [ -f build-metadata.json ]; then
+            echo "Found build-metadata.json:"
+            cat build-metadata.json
+            PUSHED_TO_GITHUB=$(jq -r '.pushed_to_github // "false"' build-metadata.json)
+            ARTIFACT_TAGS=$(jq -r '.custom_tags // ""' build-metadata.json)
+            # Artifact tags take precedence for automated runs
+            if [ -n "$ARTIFACT_TAGS" ]; then
+              CUSTOM_TAGS="$ARTIFACT_TAGS"
+            fi
+          else
+            echo "No build-metadata.json found, using defaults"
+          fi
+
+          echo "pushed_to_github=${PUSHED_TO_GITHUB}" >> $GITHUB_OUTPUT
+          echo "custom_tags=${CUSTOM_TAGS}" >> $GITHUB_OUTPUT
+          echo "Resolved: pushed_to_github=${PUSHED_TO_GITHUB}, custom_tags=${CUSTOM_TAGS}"
+
+      - name: Wait for SBOM processing
+        if: ${{ steps.vex-check.outputs.has_vex == 'true' && github.event_name == 'workflow_run' }}
+        run: |
+          # Wait for Dependency Track to process the SBOM before uploading VEX
+          # VEX can only update vulnerabilities that DTrack has already identified
+          echo "Waiting 60 seconds for SBOM processing to complete..."
+          sleep 60
+
+      - name: Upload VEX to DependencyTrack (all versions)
+        if: ${{ steps.vex-check.outputs.has_vex == 'true' }}
+        env:
+          DTRACK_URL: ${{ secrets.DEPENDENCY_TRACK_URL }}
+          DTRACK_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+          PROJECT_NAME: ${{ secrets.DEPENDENCY_TRACK_PROJECT_NAME }}
+          PUSHED_TO_GITHUB: ${{ steps.metadata.outputs.pushed_to_github }}
+          CUSTOM_TAGS: ${{ steps.metadata.outputs.custom_tags }}
+        run: |
+          upload_vex() {
+            local VERSION=$1
+            echo "Uploading VEX for version: ${VERSION}"
+
+            VEX_BASE64=$(base64 -w 0 vex.json)
+            cat > vex-payload.json << EOF
+          {
+            "projectName": "${PROJECT_NAME}",
+            "projectVersion": "${VERSION}",
+            "vex": "${VEX_BASE64}"
+          }
+          EOF
+
+            curl -X PUT "${DTRACK_URL}/api/v1/vex" \
+              -H "X-Api-Key: ${DTRACK_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d @vex-payload.json
+
+            rm vex-payload.json
+            echo ""
+          }
+
+          # Always upload gitea-latest
+          upload_vex "gitea-latest"
+
+          # Upload github-latest if pushed to GitHub
+          if [ "${PUSHED_TO_GITHUB}" = "true" ]; then
+            upload_vex "github-latest"
+          fi
+
+          # Upload each custom tag
+          if [ -n "${CUSTOM_TAGS}" ]; then
+            IFS=',' read -ra TAGS <<< "${CUSTOM_TAGS}"
+            for TAG in "${TAGS[@]}"; do
+              TAG=$(echo "$TAG" | xargs)
+              if [ -n "$TAG" ]; then
+                upload_vex "${TAG}"
+              fi
+            done
+          fi
+
+          echo "All VEX uploads completed"
