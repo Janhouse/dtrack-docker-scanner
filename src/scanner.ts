@@ -5,7 +5,7 @@ import {
   type DockerEvent,
   getBaseName,
   KubernetesClient,
-  parseImage,
+  parseImageRef,
 } from "./clients";
 import type { Config } from "./config";
 import { logger } from "./logger";
@@ -147,7 +147,7 @@ export class Scanner {
           `Skipping image (SBOM exists in Dependency-Track): ${event.image}`,
         );
         // Add to local cache
-        const { name, tag } = parseImage(event.image);
+        const { name, tag } = parseImageRef(event.image);
         this.cache.set(imageId, name, tag);
 
         // Track for cleanup - use project name/version from DTrack
@@ -165,7 +165,7 @@ export class Scanner {
 
     logger.info(`New container detected: ${event.image}`);
 
-    const { name, tag } = parseImage(event.image);
+    const { name, tag } = parseImageRef(event.image);
 
     const scanResult: ImageScanResult = {
       image: event.image,

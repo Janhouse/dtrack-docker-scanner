@@ -1,16 +1,27 @@
 import { logger } from "../logger";
 import type { ImageScanResult } from "../types";
-import { parseImage } from "./docker";
+import { parseImageRef } from "./docker";
 
 const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 
 interface K8sContainerStatus {
+  name?: string;
   image?: string;
   imageID?: string;
 }
 
+interface K8sSpecContainer {
+  name?: string;
+  image?: string;
+}
+
 interface K8sPod {
   metadata?: { namespace?: string; name?: string };
+  spec?: {
+    containers?: K8sSpecContainer[];
+    initContainers?: K8sSpecContainer[];
+    ephemeralContainers?: K8sSpecContainer[];
+  };
   status?: {
     containerStatuses?: K8sContainerStatus[];
     initContainerStatuses?: K8sContainerStatus[];
@@ -150,9 +161,25 @@ export class KubernetesClient {
         ...(pod.status?.ephemeralContainerStatuses ?? []),
       ];
 
+      // What the manifest ASKED for, keyed by container name. Preferred over
+      // status.image: for a digest-pinned container the runtime may report only
+      // a bare "sha256:..." in status, which carries no repository at all and
+      // cannot be turned back into a usable project name.
+      const specImages = new Map<string, string>();
+      for (const c of [
+        ...(pod.spec?.containers ?? []),
+        ...(pod.spec?.initContainers ?? []),
+        ...(pod.spec?.ephemeralContainers ?? []),
+      ]) {
+        if (c.name && c.image) specImages.set(c.name, c.image);
+      }
+
       for (const cs of statuses) {
-        const image = cs.image;
-        if (!image) continue;
+        const image =
+          (cs.name ? specImages.get(cs.name) : undefined) ?? cs.image;
+        // A bare digest with no repository is unusable downstream — skip it
+        // rather than create a project named after the hash.
+        if (!image || image.startsWith("sha256:")) continue;
         const imageId = shortDigest(cs.imageID);
         const existing = imageMap.get(image) ?? {
           imageId,
@@ -166,7 +193,7 @@ export class KubernetesClient {
 
     const results: ImageScanResult[] = [];
     for (const [image, data] of imageMap) {
-      const { name, tag } = parseImage(image);
+      const { name, tag } = parseImageRef(image);
       results.push({
         image,
         imageName: name,
