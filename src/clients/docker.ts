@@ -31,6 +31,39 @@ export function parseImage(image: string): { name: string; tag: string } {
 }
 
 /**
+ * Parse any image reference into name and version, including digest-pinned ones.
+ *
+ * References come in four shapes and parseImage() only handles the first:
+ *   registry/name:tag
+ *   registry/name                          <- implicit :latest
+ *   registry/name@sha256:<64 hex>          <- digest-pinned
+ *   registry/name:tag@sha256:<64 hex>      <- both
+ *
+ * Splitting on the last colon turns "ghcr.io/x/atuin@sha256:9a3b..." into name
+ * "ghcr.io/x/atuin@sha256" and tag "9a3b...", which is what produced a
+ * Dependency-Track project literally named `sha256:ae8088...` on a real cluster
+ * run. Digest-pinned images are not exotic — several workloads are pinned that
+ * way on purpose, and more have been pinned recently.
+ */
+export function parseImageRef(ref: string): { name: string; tag: string } {
+  const at = ref.indexOf("@");
+  if (at === -1) return parseImage(ref);
+
+  const beforeDigest = ref.substring(0, at);
+  const digest = ref.substring(at + 1);
+  const shortDigest = digest.startsWith("sha256:")
+    ? digest.substring("sha256:".length, "sha256:".length + 12)
+    : digest.substring(0, 12);
+
+  // name:tag@sha256:... keeps its tag; name@sha256:... is versioned by digest.
+  const parsed = parseImage(beforeDigest);
+  return {
+    name: parsed.name,
+    tag: beforeDigest.includes(":") ? parsed.tag : `sha256-${shortDigest}`,
+  };
+}
+
+/**
  * Get base image name without registry prefix
  */
 export function getBaseName(imageName: string): string {
@@ -136,7 +169,7 @@ export class DockerClient {
     // Convert to ImageScanResult array
     const results: ImageScanResult[] = [];
     for (const [image, data] of imageMap) {
-      const { name, tag } = parseImage(image);
+      const { name, tag } = parseImageRef(image);
       results.push({
         image,
         imageName: name,
