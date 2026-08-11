@@ -14,7 +14,8 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned: a floating `latest` can turn CI red with no repo change.
+          bun-version: 1.3.14
 
       - name: Cache Bun dependencies
         uses: actions/cache@v4
