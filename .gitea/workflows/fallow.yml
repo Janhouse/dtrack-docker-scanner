@@ -19,8 +19,9 @@ jobs:
         with:
           node-version: 24
 
+      # Pinned: a floating install can turn CI red with no repo change.
       - name: Install fallow
-        run: npm install -g fallow
+        run: npm install -g fallow@3.14.0
 
       # On pull requests, audit changed files against the base branch.
       # Report-only (|| true): the repo may carry an existing baseline that a
