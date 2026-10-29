@@ -1,5 +1,6 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { addBinaryComponents } from "./binaries";
 
 interface SbomResult {
   success: boolean;
@@ -36,6 +37,8 @@ export interface SbomOptions {
   // `trivy image --image-src <src>`. Omit to let Trivy auto-detect (default,
   // used for the Docker path).
   imageSrc?: string;
+  // Add syft-detected runtimes (binaries.ts). On unless explicitly false.
+  binaryScan?: boolean;
 }
 
 /**
@@ -90,6 +93,12 @@ export async function generateSbom(
       if (!(await file.exists()) || file.size === 0) {
         lastError = `${src || "auto"}: Empty SBOM generated`;
         continue;
+      }
+
+      // Runtimes Trivy can't see (compiled/untarred, not in the package DB),
+      // read from the same image source Trivy just succeeded with.
+      if (opts.binaryScan !== false) {
+        await addBinaryComponents(outputPath, image, src);
       }
 
       // Clean up the SBOM to fix license schema + spec-version issues

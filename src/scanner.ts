@@ -18,6 +18,11 @@ import type { DTrackProject, ImageScanResult } from "./types";
 const DOCKER_MARKER = "docker-scanner";
 const K8S_MARKER = "k8s-scanner";
 
+// Which SBOM generator made a project's BOM. Bump it when the generator learns
+// something new: images whose SBOM lacks the current tag are re-scanned once.
+//   2 = Trivy + syft binary/PHP-interpreter catalogers (runtimes Trivy misses)
+const SBOM_GENERATOR = "sbom-gen:2";
+
 interface ScanStats {
   total: number;
   success: number;
@@ -141,7 +146,10 @@ export class Scanner {
 
     // Check Dependency-Track for existing SBOM with this image hash
     if (imageId) {
-      const existingProject = await this.dtrack.findProjectByImageHash(imageId);
+      const existingProject = await this.dtrack.findProjectByImageHash(
+        imageId,
+        SBOM_GENERATOR,
+      );
       if (existingProject) {
         logger.debug(
           `Skipping image (SBOM exists in Dependency-Track): ${event.image}`,
@@ -443,6 +451,7 @@ export class Scanner {
       if (container.imageId) {
         const existsInDtrack = await this.dtrack.hasProjectWithImageHash(
           container.imageId,
+          SBOM_GENERATOR,
         );
         if (existsInDtrack) {
           logger.info(
@@ -612,6 +621,7 @@ export class Scanner {
         ? (container.namespaces ?? []).map((n) => `namespace:${n}`)
         : composeProjects.map((p) => `compose:${p}`)),
       ...(imageId ? [`imageid:${imageId}`] : []),
+      SBOM_GENERATOR,
     ];
 
     // Read and encode SBOM
@@ -648,6 +658,15 @@ export class Scanner {
         projectName,
         projectVersion,
       );
+
+      if (
+        newProject &&
+        !(await this.dtrack.tagProject(SBOM_GENERATOR, newProject.uuid))
+      ) {
+        logger.warn(
+          `  Could not tag ${projectName} with ${SBOM_GENERATOR} — it will be re-scanned next run`,
+        );
+      }
 
       if (newProject && oldVersions.length > 0) {
         await this.cloneAndCleanupOldVersions(newProject.uuid, oldVersions);
