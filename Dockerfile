@@ -30,6 +30,17 @@ RUN curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib
       | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}" \
     && trivy --version
 
+# Install syft — PINNED. Used only for its binary classifiers + PHP interpreter
+# cataloger (src/binaries.ts): runtimes that official images compile or untar
+# (postgres, redis, python, node, php, bun, …) are in no package DB, so Trivy
+# never reports them. Its output is requested as cyclonedx-json@1.6 explicitly,
+# so a syft bump can't silently switch the spec version DT accepts. The
+# installer verifies the release checksums.
+ARG SYFT_VERSION=v1.54.1
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+      | sh -s -- -b /usr/local/bin "${SYFT_VERSION}" \
+    && syft version
+
 # Create app directory
 WORKDIR /app
 

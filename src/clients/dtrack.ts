@@ -336,11 +336,11 @@ export class DependencyTrackClient {
   /**
    * Check if a project exists with the given image hash tag
    */
-  async hasProjectWithImageHash(imageHash: string): Promise<boolean> {
-    if (!imageHash) return false;
-    const tag = `imageid:${imageHash}`;
-    const projects = await this.findProjectsByTag(tag);
-    return projects.length > 0;
+  async hasProjectWithImageHash(
+    imageHash: string,
+    requiredTag?: string,
+  ): Promise<boolean> {
+    return (await this.findProjectByImageHash(imageHash, requiredTag)) !== null;
   }
 
   /**
@@ -348,11 +348,31 @@ export class DependencyTrackClient {
    */
   async findProjectByImageHash(
     imageHash: string,
+    requiredTag?: string,
   ): Promise<DTrackProject | null> {
     if (!imageHash) return null;
     const tag = `imageid:${imageHash}`;
     const projects = await this.findProjectsByTag(tag);
-    return projects[0] ?? null;
+    // requiredTag: only count SBOMs made by the current generator, so a
+    // generator upgrade re-scans every image once.
+    const match = requiredTag
+      ? projects.filter((p) => p.tags?.some((t) => t.name === requiredTag))
+      : projects;
+    return match[0] ?? null;
+  }
+
+  /**
+   * Tag a project (POST /api/v1/tag/{name}/project). BOM upload's projectTags
+   * are not reliably applied to a project that already exists, so tags that
+   * drive scanner decisions are set explicitly. Best effort.
+   */
+  async tagProject(tag: string, projectUuid: string): Promise<boolean> {
+    const { httpCode } = await this.request<unknown>(
+      "POST",
+      `/api/v1/tag/${encodeURIComponent(tag)}/project`,
+      [projectUuid],
+    );
+    return httpCode >= 200 && httpCode < 300;
   }
 
   /**
