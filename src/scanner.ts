@@ -26,8 +26,10 @@ const K8S_MARKER = "k8s-scanner";
 // Which SBOM generator made a project's BOM. Bump it when the generator learns
 // something new: images whose SBOM lacks the current tag are re-scanned once.
 //   2 = Trivy + syft binary/PHP-interpreter catalogers (runtimes Trivy misses)
-//   3 = + govulncheck on Go binaries (dtrack-scanner:govulncheck:* properties)
-const SBOM_GENERATOR = "sbom-gen:3";
+//   3 = + govulncheck on Go binaries — but it found no modules (Trivy puts
+//       no FilePath on them), so those SBOMs carry no results
+//   4 = govulncheck via the binary → module dependency graph
+const SBOM_GENERATOR = "sbom-gen:4";
 
 interface ScanStats {
   total: number;
