@@ -112,6 +112,9 @@ export async function addBinaryComponents(
   sbomPath: string,
   image: string,
   trivySrc: string,
+  // A running container's root filesystem (source "rootfs"): scanned in
+  // place, never following a link above it.
+  rootfs?: string,
 ): Promise<void> {
   const syftPath = join(
     tmpdir(),
@@ -122,9 +125,9 @@ export async function addBinaryComponents(
       [
         "syft",
         "scan",
-        "--from",
-        syftSource(trivySrc),
-        image,
+        ...(rootfs
+          ? [`dir:${rootfs}`, "--base-path", rootfs]
+          : ["--from", syftSource(trivySrc), image]),
         "--override-default-catalogers",
         [...BINARY_CATALOGERS, ...OWNERSHIP_CATALOGERS].join(","),
         "--quiet",

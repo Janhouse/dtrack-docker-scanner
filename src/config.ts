@@ -28,9 +28,10 @@ export interface Config {
     nodeName: string;
     // Only scan these namespaces (empty => all visible to the token).
     namespaces: string[];
-    // Trivy image source for k8s images: "containerd" (default; scans images
-    // already on the node via the containerd socket, no registry creds needed)
-    // or "remote" (pull from the registry).
+    // Trivy image sources for k8s images, tried in order: "rootfs" (a running
+    // container's root filesystem on the node, read in place — no pull, no
+    // socket), "containerd" (the node's image store via the containerd
+    // socket), "remote" (pull from the registry).
     trivyImageSrc: string;
   };
   host: {

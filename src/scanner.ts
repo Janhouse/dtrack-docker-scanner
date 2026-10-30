@@ -33,7 +33,9 @@ const HOST_MARKER = "host-os";
 //   3 = + govulncheck on Go binaries — but it found no modules (Trivy puts
 //       no FilePath on them), so those SBOMs carry no results
 //   4 = govulncheck via the binary → module dependency graph
-const SBOM_GENERATOR = "sbom-gen:4";
+//   5 = k8s images scanned from the running containers' root filesystems
+//       (TRIVY_K8S_IMAGE_SRC=rootfs,remote): no pulls, no containerd socket
+const SBOM_GENERATOR = "sbom-gen:5";
 
 interface ScanStats {
   total: number;
@@ -96,7 +98,14 @@ export class Scanner {
       container.source === "kubernetes" &&
       this.config.kubernetes.trivyImageSrc
     ) {
-      return { imageSrc: this.config.kubernetes.trivyImageSrc, govulncheck };
+      return {
+        imageSrc: this.config.kubernetes.trivyImageSrc,
+        govulncheck,
+        rootfs: {
+          dir: gvc.rootfsDir,
+          containerIds: container.containerIds ?? [],
+        },
+      };
     }
     return { govulncheck };
   }

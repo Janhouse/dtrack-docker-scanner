@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addBinaryComponents } from "./binaries";
@@ -42,6 +43,20 @@ export interface SbomOptions {
   binaryScan?: boolean;
   // govulncheck the image's Go binaries (govulncheck.ts). Off when absent.
   govulncheck?: GovulncheckOptions;
+  // Source "rootfs": the image's running containers on this node, whose root
+  // filesystems containerd keeps mounted at <dir>/<container id>/rootfs.
+  rootfs?: { dir: string; containerIds: string[] };
+}
+
+/** The first running container of the image whose rootfs is readable. */
+async function runningRootfs(
+  rootfs: SbomOptions["rootfs"],
+): Promise<string | null> {
+  for (const id of rootfs?.containerIds ?? []) {
+    const p = join(rootfs!.dir, id, "rootfs");
+    if ((await stat(p).catch(() => null))?.isDirectory()) return p;
+  }
+  return null;
 }
 
 /**
@@ -68,18 +83,36 @@ export async function generateSbom(
       tmpdir(),
       `sbom-${Date.now()}-${Math.random().toString(36).substring(2)}.json`,
     );
+    // "rootfs": scan a running container's filesystem in place — no image
+    // pull, no layer copies, no containerd socket. Trivy's rootfs mode reads
+    // installed packages exactly like an image scan (minus layer attribution).
+    const rootfs = src === "rootfs" ? await runningRootfs(opts.rootfs) : null;
+    if (src === "rootfs" && !rootfs) {
+      lastError = "rootfs: no running container of this image on the node";
+      continue;
+    }
     try {
       const proc = Bun.spawn(
-        [
-          "trivy",
-          "image",
-          ...(src ? ["--image-src", src] : []),
-          "--format",
-          "cyclonedx",
-          "--output",
-          outputPath,
-          image,
-        ],
+        rootfs
+          ? [
+              "trivy",
+              "rootfs",
+              "--format",
+              "cyclonedx",
+              "--output",
+              outputPath,
+              rootfs,
+            ]
+          : [
+              "trivy",
+              "image",
+              ...(src ? ["--image-src", src] : []),
+              "--format",
+              "cyclonedx",
+              "--output",
+              outputPath,
+              image,
+            ],
         { stdout: "pipe", stderr: "pipe" },
       );
 
@@ -101,7 +134,7 @@ export async function generateSbom(
       // Runtimes Trivy can't see (compiled/untarred, not in the package DB),
       // read from the same image source Trivy just succeeded with.
       if (opts.binaryScan !== false) {
-        await addBinaryComponents(outputPath, image, src);
+        await addBinaryComponents(outputPath, image, src, rootfs ?? undefined);
       }
 
       // Which vulnerable Go code is actually compiled in (govulncheck.ts).
