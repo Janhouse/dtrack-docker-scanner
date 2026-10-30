@@ -3,6 +3,7 @@ import { readdir, stat } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
 import { logger } from "./logger";
+import { addTrivyVerdicts } from "./trivy-verdicts";
 
 /**
  * The node's own operating system packages (and its running kernel) as an
@@ -188,5 +189,6 @@ export async function generateHostSbom(root: string): Promise<HostSbom | null> {
   logger.info(
     `Host scan: ${components.length} packages (${version}, kernel ${uname}, ${viaTrivy ? "trivy" : "syft inventory"})`,
   );
+  if (viaTrivy) await addTrivyVerdicts(out);
   return { path: out, version };
 }

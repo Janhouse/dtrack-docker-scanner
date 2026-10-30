@@ -35,7 +35,8 @@ const HOST_MARKER = "host-os";
 //   4 = govulncheck via the binary → module dependency graph
 //   5 = k8s images scanned from the running containers' root filesystems
 //       (TRIVY_K8S_IMAGE_SRC=rootfs,remote): no pulls, no containerd socket
-const SBOM_GENERATOR = "sbom-gen:5";
+//   6 = + Trivy's verdict per package (distro severity, fixed version)
+const SBOM_GENERATOR = "sbom-gen:6";
 
 interface ScanStats {
   total: number;

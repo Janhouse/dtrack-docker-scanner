@@ -153,3 +153,46 @@ describe("host scan helpers", () => {
     expect(isStaleKernelPackage("openssl", uname)).toBe(false);
   });
 });
+
+import { chunkVerdicts, verdictsByRef } from "./trivy-verdicts";
+
+describe("trivy verdicts", () => {
+  test("worst first, kernel headers skipped, epoch colons kept", () => {
+    const m = verdictsByRef([
+      {
+        VulnerabilityID: "CVE-1",
+        PkgName: "openssl",
+        PkgIdentifier: { BOMRef: "r1" },
+        Severity: "LOW",
+        Status: "fixed",
+        FixedVersion: "1:3.5.5-1",
+      },
+      {
+        VulnerabilityID: "CVE-2",
+        PkgName: "openssl",
+        PkgIdentifier: { BOMRef: "r1" },
+        Severity: "CRITICAL",
+        Status: "affected",
+      },
+      {
+        VulnerabilityID: "CVE-3",
+        PkgName: "linux-libc-dev",
+        PkgIdentifier: { BOMRef: "r2" },
+        Severity: "HIGH",
+        Status: "fixed",
+        FixedVersion: "6.12.1",
+      },
+    ]);
+    expect(m.get("r1")).toEqual(["CVE-2|C|A|", "CVE-1|L|F|1:3.5.5-1"]);
+    expect(m.has("r2")).toBe(false);
+  });
+  test("chunks stay under 1000 characters", () => {
+    const entries = Array.from(
+      { length: 200 },
+      (_, i) => `CVE-2026-${10000 + i}|H|F|3.5.5-1~deb13u2`,
+    );
+    const chunks = chunkVerdicts(entries);
+    expect(chunks.every((c) => c.length <= 1000)).toBe(true);
+    expect(chunks.join(";").split(";")).toHaveLength(200);
+  });
+});

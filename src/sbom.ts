@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addBinaryComponents } from "./binaries";
 import { addGovulncheck, type GovulncheckOptions } from "./govulncheck";
+import { addTrivyVerdicts } from "./trivy-verdicts";
 
 interface SbomResult {
   success: boolean;
@@ -144,6 +145,9 @@ export async function generateSbom(
 
       // Clean up the SBOM to fix license schema + spec-version issues
       await cleanupSbom(outputPath);
+      // Trivy's own verdict per package (distro severity, fixed version),
+      // which Dependency-Track drops (trivy-verdicts.ts).
+      await addTrivyVerdicts(outputPath);
       return { success: true, filePath: outputPath };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
