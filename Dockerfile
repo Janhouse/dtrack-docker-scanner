@@ -1,3 +1,9 @@
+# govulncheck (src/govulncheck.ts): binary-mode reachability of the images'
+# Go binaries against the Go vulnerability DB. PINNED, built static.
+FROM golang:1.27-alpine AS gotools
+ARG GOVULNCHECK_VERSION=v1.9.0
+RUN CGO_ENABLED=0 GOBIN=/out go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+
 FROM oven/bun:1.4-alpine AS base
 
 # Install system dependencies
@@ -6,6 +12,8 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     curl
+
+COPY --from=gotools /out/govulncheck /usr/local/bin/
 
 # Install Trivy — PINNED, and the pin is load-bearing.
 #

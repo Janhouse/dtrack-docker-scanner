@@ -8,6 +8,10 @@ interface K8sContainerStatus {
   name?: string;
   image?: string;
   imageID?: string;
+  // "containerd://<id>" — its root filesystem is mounted on the node while
+  // it runs (govulncheck reads Go binaries from there)
+  containerID?: string;
+  state?: { running?: unknown };
 }
 
 interface K8sSpecContainer {
@@ -148,7 +152,7 @@ export class KubernetesClient {
     // image ref -> { imageId, namespaces }
     const imageMap = new Map<
       string,
-      { imageId: string; namespaces: Set<string> }
+      { imageId: string; namespaces: Set<string>; containerIds: Set<string> }
     >();
 
     for (const pod of list.items ?? []) {
@@ -184,8 +188,13 @@ export class KubernetesClient {
         const existing = imageMap.get(image) ?? {
           imageId,
           namespaces: new Set<string>(),
+          containerIds: new Set<string>(),
         };
         existing.namespaces.add(ns);
+        const cid = /^containerd:\/\/([0-9a-f]{64})$/.exec(
+          cs.containerID ?? "",
+        )?.[1];
+        if (cid && cs.state?.running) existing.containerIds.add(cid);
         if (imageId && !existing.imageId) existing.imageId = imageId;
         imageMap.set(image, existing);
       }
@@ -202,6 +211,7 @@ export class KubernetesClient {
         composeProjects: [],
         source: "kubernetes",
         namespaces: Array.from(data.namespaces),
+        containerIds: Array.from(data.containerIds),
       });
     }
     return results;

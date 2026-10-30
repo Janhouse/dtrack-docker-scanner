@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addBinaryComponents } from "./binaries";
+import { addGovulncheck, type GovulncheckOptions } from "./govulncheck";
 
 interface SbomResult {
   success: boolean;
@@ -39,6 +40,8 @@ export interface SbomOptions {
   imageSrc?: string;
   // Add syft-detected runtimes (binaries.ts). On unless explicitly false.
   binaryScan?: boolean;
+  // govulncheck the image's Go binaries (govulncheck.ts). Off when absent.
+  govulncheck?: GovulncheckOptions;
 }
 
 /**
@@ -99,6 +102,11 @@ export async function generateSbom(
       // read from the same image source Trivy just succeeded with.
       if (opts.binaryScan !== false) {
         await addBinaryComponents(outputPath, image, src);
+      }
+
+      // Which vulnerable Go code is actually compiled in (govulncheck.ts).
+      if (opts.govulncheck) {
+        await addGovulncheck(outputPath, image, opts.govulncheck);
       }
 
       // Clean up the SBOM to fix license schema + spec-version issues

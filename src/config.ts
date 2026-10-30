@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import type { GoSource } from "./govulncheck";
 
 export interface Config {
   dtrack: {
@@ -31,6 +32,11 @@ export interface Config {
     // already on the node via the containerd socket, no registry creds needed)
     // or "remote" (pull from the registry).
     trivyImageSrc: string;
+  };
+  govulncheck: {
+    sources: GoSource[];
+    dbUrl: string;
+    rootfsDir: string;
   };
 }
 
@@ -101,6 +107,19 @@ export function loadConfig(): Config {
       nodeName: getEnv("KUBE_NODE_NAME", "").trim(),
       namespaces: getEnvList("KUBE_NAMESPACES"),
       trivyImageSrc: getEnv("TRIVY_K8S_IMAGE_SRC", "containerd,remote").trim(),
+    },
+    govulncheck: {
+      // Where Go binaries are read from, in order: rootfs (k8s: running
+      // containers' root filesystems on the node, read in place) or docker
+      // (docker cp). Empty = govulncheck off.
+      sources: getEnvList("GOVULNCHECK_SOURCES").filter((s): s is GoSource =>
+        (["rootfs", "docker"] as string[]).includes(s),
+      ),
+      dbUrl: getEnv("GOVULNDB_URL", "https://vuln.go.dev").trim(),
+      rootfsDir: getEnv(
+        "GOVULNCHECK_ROOTFS_DIR",
+        "/run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io",
+      ).trim(),
     },
   };
 }

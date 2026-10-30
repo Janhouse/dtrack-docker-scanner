@@ -9,7 +9,12 @@ import {
 } from "./clients";
 import type { Config } from "./config";
 import { logger } from "./logger";
-import { cleanupSbomFile, generateSbom, readSbomAsBase64 } from "./sbom";
+import {
+  cleanupSbomFile,
+  generateSbom,
+  readSbomAsBase64,
+  type SbomOptions,
+} from "./sbom";
 import type { DTrackProject, ImageScanResult } from "./types";
 
 // DependencyTrack tags identifying which scanner manages a project. Cleanup is
@@ -21,7 +26,8 @@ const K8S_MARKER = "k8s-scanner";
 // Which SBOM generator made a project's BOM. Bump it when the generator learns
 // something new: images whose SBOM lacks the current tag are re-scanned once.
 //   2 = Trivy + syft binary/PHP-interpreter catalogers (runtimes Trivy misses)
-const SBOM_GENERATOR = "sbom-gen:2";
+//   3 = + govulncheck on Go binaries (dtrack-scanner:govulncheck:* properties)
+const SBOM_GENERATOR = "sbom-gen:3";
 
 interface ScanStats {
   total: number;
@@ -69,14 +75,24 @@ export class Scanner {
    * Trivy options for an image, based on which source it came from. Kubernetes
    * images are read from the node's image store (default: containerd).
    */
-  private sbomOptsFor(container: ImageScanResult): { imageSrc?: string } {
+  private sbomOptsFor(container: ImageScanResult): SbomOptions {
+    const gvc = this.config.govulncheck;
+    const govulncheck =
+      gvc.sources.length > 0
+        ? {
+            sources: gvc.sources,
+            dbUrl: gvc.dbUrl,
+            rootfsDir: gvc.rootfsDir,
+            containerIds: container.containerIds,
+          }
+        : undefined;
     if (
       container.source === "kubernetes" &&
       this.config.kubernetes.trivyImageSrc
     ) {
-      return { imageSrc: this.config.kubernetes.trivyImageSrc };
+      return { imageSrc: this.config.kubernetes.trivyImageSrc, govulncheck };
     }
-    return {};
+    return { govulncheck };
   }
 
   /**

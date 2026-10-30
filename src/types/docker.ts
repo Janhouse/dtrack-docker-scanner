@@ -14,4 +14,7 @@ export interface ImageScanResult {
   source?: ScanSource;
   // Kubernetes namespaces this image runs in (source === "kubernetes").
   namespaces?: string[];
+  // Running containers of this image on this node (source === "kubernetes"):
+  // their root filesystems are where govulncheck reads Go binaries from.
+  containerIds?: string[];
 }
