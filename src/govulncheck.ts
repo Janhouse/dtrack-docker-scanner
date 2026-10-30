@@ -58,6 +58,7 @@ interface CdxComponent {
 }
 interface CdxBom {
   components?: CdxComponent[];
+  dependencies?: { ref: string; dependsOn?: string[] }[];
   [key: string]: unknown;
 }
 
@@ -68,6 +69,53 @@ const prop = (c: CdxComponent, name: string) =>
 export function goModuleOf(purl: string | undefined): string | null {
   const m = /^pkg:golang\/([^@?#]+)/.exec(purl ?? "");
   return m ? decodeURIComponent(m[1]!) : null;
+}
+
+export const PROP_BINARY = "dtrack-scanner:go-binary";
+
+/**
+ * Go binary path → its module components. Trivy models each binary as an
+ * "application" component named by its path (Type gobinary) whose modules
+ * hang off it in the dependency graph — the modules carry no file path.
+ */
+export function goBinaries(bom: CdxBom): Map<string, CdxComponent[]> {
+  const byRef = new Map<string, CdxComponent>();
+  const all: CdxComponent[] = [];
+  const walk = (list: CdxComponent[] | undefined) => {
+    for (const c of list ?? []) {
+      all.push(c);
+      if (typeof c["bom-ref"] === "string") byRef.set(c["bom-ref"], c);
+      walk(c.components);
+    }
+  };
+  walk(bom.components);
+  const deps = new Map(
+    (bom.dependencies ?? []).map((d) => [d.ref, d.dependsOn ?? []]),
+  );
+  const out = new Map<string, CdxComponent[]>();
+  for (const app of all) {
+    if (
+      app.type !== "application" ||
+      prop(app, "aquasecurity:trivy:Type") !== "gobinary"
+    )
+      continue;
+    const path = String(app.name ?? "").replace(/^\/+/, "");
+    const ref = app["bom-ref"];
+    if (!path || typeof ref !== "string") continue;
+    const mods: CdxComponent[] = [];
+    const seen = new Set<string>([ref]);
+    const queue = [...(deps.get(ref) ?? [])];
+    while (queue.length > 0) {
+      const r = queue.shift()!;
+      if (seen.has(r)) continue;
+      seen.add(r);
+      const c = byRef.get(r);
+      if (c && goModuleOf(c.purl)) mods.push(c);
+      queue.push(...(deps.get(r) ?? []));
+    }
+    if (mods.length > 0) out.set(path, [...(out.get(path) ?? []), ...mods]);
+  }
+  return out;
 }
 
 async function run(
@@ -249,18 +297,7 @@ export async function addGovulncheck(
     return;
   }
 
-  const byBinary = new Map<string, CdxComponent[]>();
-  const walk = (list: CdxComponent[] | undefined) => {
-    for (const c of list ?? []) {
-      const path = prop(c, "aquasecurity:trivy:FilePath");
-      if (prop(c, "aquasecurity:trivy:PkgType") === "gobinary" && path) {
-        const rel = path.replace(/^\/+/, "");
-        byBinary.set(rel, [...(byBinary.get(rel) ?? []), c]);
-      }
-      walk(c.components);
-    }
-  };
-  walk(bom.components);
+  const byBinary = goBinaries(bom);
   if (byBinary.size === 0) return;
 
   const work = join(
@@ -310,9 +347,13 @@ export async function addGovulncheck(
         const mod = goModuleOf(c.purl);
         if (!mod) continue;
         c.properties = (c.properties ?? []).filter(
-          (p) => p.name !== PROP_ABSENT && p.name !== PROP_PRESENT,
+          (p) =>
+            p.name !== PROP_ABSENT &&
+            p.name !== PROP_PRESENT &&
+            p.name !== PROP_BINARY,
         );
         c.properties.push(
+          { name: PROP_BINARY, value: rel },
           {
             name: PROP_ABSENT,
             value: [...(v.absent.get(mod) ?? [])].sort().join(","),

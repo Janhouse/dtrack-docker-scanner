@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { goModuleOf, insideRoot, parseGovulncheck } from "./govulncheck";
+import {
+  goBinaries,
+  goModuleOf,
+  insideRoot,
+  parseGovulncheck,
+} from "./govulncheck";
 
 describe("govulncheck helpers", () => {
   test("goModuleOf", () => {
@@ -79,5 +84,46 @@ describe("govulncheck helpers", () => {
       "GO-2",
     ]);
     expect(v.present.get("golang.org/x/net")).toBeUndefined();
+  });
+
+  test("goBinaries follows Trivy's application → module dependency graph", () => {
+    const bom = {
+      components: [
+        {
+          "bom-ref": "app",
+          type: "application",
+          name: "bin/keel",
+          properties: [{ name: "aquasecurity:trivy:Type", value: "gobinary" }],
+        },
+        {
+          "bom-ref": "m1",
+          type: "library",
+          name: "golang.org/x/crypto",
+          purl: "pkg:golang/golang.org/x/crypto@v0.21.0",
+        },
+        {
+          "bom-ref": "m2",
+          type: "library",
+          name: "stdlib",
+          purl: "pkg:golang/stdlib@v1.22.1",
+        },
+        {
+          "bom-ref": "os",
+          type: "library",
+          name: "busybox",
+          purl: "pkg:apk/alpine/busybox@1",
+        },
+      ],
+      dependencies: [
+        { ref: "app", dependsOn: ["m1", "m2"] },
+        { ref: "m1", dependsOn: [] },
+      ],
+    };
+    const m = goBinaries(bom);
+    expect([...m.keys()]).toEqual(["bin/keel"]);
+    expect(m.get("bin/keel")?.map((c) => c.name)).toEqual([
+      "golang.org/x/crypto",
+      "stdlib",
+    ]);
   });
 });
