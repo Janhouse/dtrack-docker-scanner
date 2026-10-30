@@ -8,6 +8,7 @@ import {
   parseImageRef,
 } from "./clients";
 import type { Config } from "./config";
+import { generateHostSbom, hostFingerprint } from "./host";
 import { logger } from "./logger";
 import {
   cleanupSbomFile,
@@ -22,6 +23,9 @@ import type { DTrackProject, ImageScanResult } from "./types";
 // projects.
 const DOCKER_MARKER = "docker-scanner";
 const K8S_MARKER = "k8s-scanner";
+// The node's own OS packages (src/host.ts). Its own marker, so neither the
+// docker nor the k8s stale-image cleanup ever touches it.
+const HOST_MARKER = "host-os";
 
 // Which SBOM generator made a project's BOM. Bump it when the generator learns
 // something new: images whose SBOM lacks the current tag are re-scanned once.
@@ -95,6 +99,42 @@ export class Scanner {
       return { imageSrc: this.config.kubernetes.trivyImageSrc, govulncheck };
     }
     return { govulncheck };
+  }
+
+  /**
+   * SBOM of the host itself (package DB + running kernel), one DT project
+   * "host/<hostname>" per node. Skipped while the package DB and kernel are
+   * unchanged since the last upload by this generator.
+   */
+  private async scanHost(): Promise<void> {
+    const root = this.config.host.root;
+    const name = `host/${this.config.scanner.hostname}`;
+    try {
+      const fp = await hostFingerprint(root);
+      if (await this.dtrack.hasProjectWithImageHash(fp, SBOM_GENERATOR)) {
+        logger.info(`Host scan: ${name} unchanged — skipped`);
+        return;
+      }
+      const sbom = await generateHostSbom(root);
+      if (!sbom) return;
+      try {
+        await this.uploadSbom(
+          {
+            image: name,
+            imageName: name,
+            imageTag: sbom.version,
+            imageId: fp,
+            composeProjects: [],
+            source: "host",
+          },
+          sbom.path,
+        );
+      } finally {
+        await cleanupSbomFile(sbom.path);
+      }
+    } catch (err) {
+      logger.error(`Host scan failed: ${err}`);
+    }
   }
 
   /**
@@ -383,6 +423,9 @@ export class Scanner {
         `Total: ${stats.total} | Success: ${stats.success} | Failed: ${stats.failed} | Skipped: ${stats.skipped} | Cached: ${stats.cached}`,
       );
 
+      // The node's own OS packages and running kernel.
+      if (this.config.host.root) await this.scanHost();
+
       // Cleanup stale projects (sequential) - skip if requested
       if (this.config.scanner.cleanupStale && !skipCleanup) {
         await this.cleanupAllSources();
@@ -634,7 +677,11 @@ export class Scanner {
     const tags = [
       baseName,
       `host:${this.config.scanner.hostname}`,
-      isK8s ? K8S_MARKER : DOCKER_MARKER,
+      container.source === "host"
+        ? HOST_MARKER
+        : isK8s
+          ? K8S_MARKER
+          : DOCKER_MARKER,
       ...(isK8s
         ? (container.namespaces ?? []).map((n) => `namespace:${n}`)
         : composeProjects.map((p) => `compose:${p}`)),

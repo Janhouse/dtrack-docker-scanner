@@ -127,3 +127,29 @@ describe("govulncheck helpers", () => {
     ]);
   });
 });
+
+import { isStaleKernelPackage, kernelVersion } from "./host";
+
+describe("host scan helpers", () => {
+  test("kernelVersion", () => {
+    expect(kernelVersion("6.12.113+deb13-amd64")).toBe("6.12.113");
+    expect(kernelVersion("7.2.11-zen1-1-zen")).toBe("7.2.11");
+  });
+  test("only the running kernel's packages stay", () => {
+    const uname = "6.12.113+deb13-amd64";
+    expect(
+      isStaleKernelPackage("linux-image-6.12.111+deb13-amd64", uname),
+    ).toBe(true);
+    expect(
+      isStaleKernelPackage("linux-image-6.12.113+deb13-amd64", uname),
+    ).toBe(false);
+    expect(
+      isStaleKernelPackage("linux-headers-6.12.111+deb13-common", uname),
+    ).toBe(true);
+    expect(
+      isStaleKernelPackage("linux-headers-6.12.113+deb13-common", uname),
+    ).toBe(false);
+    expect(isStaleKernelPackage("linux-image-amd64", uname)).toBe(false);
+    expect(isStaleKernelPackage("openssl", uname)).toBe(false);
+  });
+});

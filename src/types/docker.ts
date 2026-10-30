@@ -2,7 +2,7 @@
  * Types for Docker operations
  */
 
-export type ScanSource = "docker" | "kubernetes";
+export type ScanSource = "docker" | "kubernetes" | "host";
 
 export interface ImageScanResult {
   image: string;

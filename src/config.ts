@@ -33,6 +33,11 @@ export interface Config {
     // or "remote" (pull from the registry).
     trivyImageSrc: string;
   };
+  host: {
+    // Where the host's package DB + os-release are mounted read-only
+    // (src/host.ts). Empty = no host scan.
+    root: string;
+  };
   govulncheck: {
     sources: GoSource[];
     dbUrl: string;
@@ -107,6 +112,9 @@ export function loadConfig(): Config {
       nodeName: getEnv("KUBE_NODE_NAME", "").trim(),
       namespaces: getEnvList("KUBE_NAMESPACES"),
       trivyImageSrc: getEnv("TRIVY_K8S_IMAGE_SRC", "containerd,remote").trim(),
+    },
+    host: {
+      root: getEnv("HOST_SCAN_ROOT", "").trim(),
     },
     govulncheck: {
       // Where Go binaries are read from, in order: rootfs (k8s: running
