@@ -15,10 +15,10 @@
     "format": "biome format --write src/"
   },
   "dependencies": {
-    "croner": "^10.0.1"
+    "croner": "^11.0.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.3",
+    "@biomejs/biome": "^2.6.4",
     "@types/bun": "^1.4.4",
     "typescript": "^7.0.2"
   }
